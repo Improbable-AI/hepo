@@ -7,7 +7,10 @@ Official codebase for "Going Beyond Heurisitics by Imposing Policy Improvement A
 
 ## Reproduce experiments in `IsaacGym`
 
-**1. Clone this repoisitory: `git clone https://github.com/Improbable-AI/hepo`**
+**1. Clone this repoisitory:**
+```
+git clone https://github.com/Improbable-AI/hepo
+```
 
 **2. Install the dependicies:**
 ```bash
