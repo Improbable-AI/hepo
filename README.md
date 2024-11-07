@@ -1,4 +1,4 @@
-Official Going Beyond Heurisitics by Imposing Policy Improvement As A Constraint
+Official codebase for "Going Beyond Heurisitics by Imposing Policy Improvement As A Constraint", NeurIPS'24
 =
 **Paper link**: https://openreview.net/pdf?id=vBGMbFgvsX
 
@@ -35,7 +35,7 @@ pip install -e .
 
 
 ## Running the benchmarks in robotic tasks
-The following are the commands to run the experiments for the methods `H-only`, `J-only`, and `HEPO` (see our paper for details). In short, `H-only` is PPO trained with heursitic reward provided with the benchmarking task and `J-only` is PPO trained with the task reward only. `HEPO` is trained with both heuristic and task rewards.
+The following are the commands to run the experiments for the methods `H-only`, `J-only`, and `HEPO` (see our paper for details). In short, `H-only` is a PPO trained with a heuristic reward provided with the benchmarking task, and `J-only` is a PPO trained with the task reward only. `HEPO` is trained with both heuristic and task rewards.
 
 #### J-only
 ```bash
@@ -52,7 +52,7 @@ python train.py ext_scheme='total' task=$task max_iterations=$max_iterations see
 python train.py lmbd=1. alpha=0. update_alpha_gae=True use_hepo=True ext_scheme='success' int_scheme='total' alpha_lr=0.0001 task=$task max_iterations=$max_iterations seed=$seed
 ```
 
-For `$task` and `$max_iterations`, please follow the table below and subsititute the values to the commands above. The available `IsaacGym` and `Bi-Dex` tasks and the suggested `max_iterations` are the following:
+For `$task` and `$max_iterations`, please follow the table below and substitute the values to the commands above. The available `IsaacGym` and `Bi-Dex` tasks and the suggested `max_iterations` are the following:
 | Task            | max_iterations |
 |-----------------|----------------|
 | Ant             | 3000           |
@@ -93,7 +93,7 @@ wandb_activate=True
 wandb_project=${W&B project name}
 experiment=${W&B run name}
 ```
-The average task reward of `H-only` and `J-only` is stored at `rewards/ppo_metric`, and that of `HEPO` is stored at `reawrds/hepo_metric`.
+The average task reward of `H-only` and `J-only` is stored at `rewards/ppo_metric`, and that of `HEPO` is stored at `rewards/hepo_metric`.
 
 One example command with logging should look like:
 ```bash
