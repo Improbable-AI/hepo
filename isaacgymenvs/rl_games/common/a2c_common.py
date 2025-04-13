@@ -79,6 +79,8 @@ class A2CBase(BaseAlgorithm):
         self.use_int = params['use_int']
         self.ext_scheme = params['ext_scheme']
         self.int_scheme = params['int_scheme']
+        self.use_pbrs = params['use_pbrs']
+        self.use_hurl = params['use_hurl']
         self.config = config = params['config']
         pbt_str = ''
         self.population_based_training = config.get('population_based_training', False)
@@ -139,7 +141,7 @@ class A2CBase(BaseAlgorithm):
         self.env_name = config['env_name']
 
         self.vec_env = None
-        self.env_info = config.get('env_info')
+        self.env_info = config.get('env_info')    
         if self.env_info is None:
             self.vec_env = vecenv.create_vec_env(self.env_name, self.num_actors, **self.env_config)
             self.env_info = self.vec_env.get_env_info()
@@ -544,7 +546,8 @@ class A2CBase(BaseAlgorithm):
 
     def env_step(self, actions):
         actions = self.preprocess_actions(actions)
-        obs, rewards, success, dones, infos = self.vec_env.step(actions)
+        obs, rewards, dones, infos = self.vec_env.step(actions)
+        success = infos['score']
         rewards_dict = {}
         if self.is_tensor_obses:
             if self.value_size == 1:
@@ -565,11 +568,21 @@ class A2CBase(BaseAlgorithm):
         else:
             if self.value_size == 1:
                 rewards = np.expand_dims(rewards, axis=1)
+                success = np.expand_dims(success, axis=1)
             rewards = torch.from_numpy(rewards).to(self.ppo_device).float()
             rewards = rewards.to(self.ppo_device)
-            rewards_int = torch.zeros(rewards.shape).to(self.ppo_device)
-            rewards = {'ext': rewards, 'int': rewards_int}
-            return self.obs_to_tensors(obs), rewards, torch.from_numpy(dones).to(self.ppo_device), infos
+            success = torch.from_numpy(success).to(self.ppo_device).float()
+            success = success.to(self.ppo_device)
+            if self.ext_scheme == 'total':
+                rewards_dict['ext'] = rewards
+            elif self.ext_scheme == 'success':
+                rewards_dict['ext'] = success
+            if self.int_scheme == 'total':
+                rewards_dict['int'] = rewards
+            elif self.int_scheme == 'zero':
+                zeros = torch.zeros(rewards.shape).to(self.ppo_device)
+                rewards_dict['int'] = zeros
+            return self.obs_to_tensors(obs), rewards_dict, success, torch.from_numpy(dones).to(self.ppo_device), infos
 
     def env_reset(self):
         obs = self.vec_env.reset()
@@ -853,6 +866,18 @@ class A2CBase(BaseAlgorithm):
 
         fdones = self.dones.float()
         mb_fdones = self.experience_buffer.tensor_dict['dones'].float()
+        if self.use_pbrs:
+            rewards_int = self.experience_buffer.tensor_dict['rewards_int'][:]           
+            potential_rewards = self.gamma * \
+                torch.cat([rewards_int[1:], rewards_int[-1:]]) - rewards_int
+            self.experience_buffer.tensor_dict['rewards_int'] = potential_rewards
+        if self.use_hurl:
+            rewards_int = self.experience_buffer.tensor_dict['rewards_int'][:]
+            heuristic_rewards = torch.cat([rewards_int[1:], rewards_int[-1:]])
+            wc = math.atan(0.99) / ((self.max_epochs - 1) * 10**5)
+            lmbdn = 0.99 + 0.01 * math.tanh((self.epoch_num - 1) * wc) / 0.99
+            self.experience_buffer.tensor_dict['rewards_int'] = heuristic_rewards
+            self.lgrgn_mtpr.lmbd = self.gamma * (1 - lmbdn)
 
         mb_returns, mb_returns_int = self.compute_returns(fdones, last_values, mb_fdones, self.experience_buffer)
         batch_dict = self.experience_buffer.get_transformed_list(swap_and_flatten01, self.tensor_list)
@@ -1423,7 +1448,7 @@ class ContinuousA2CBase(A2CBase):
             dist.broadcast_object_list(model_params, 0)
             self.model.load_state_dict(model_params[0])
 
-        while True:          
+        while True:
             epoch_num = self.update_epoch()
             step_time, play_time, update_time, sum_time, a_losses, c_losses, b_losses, entropies, kls, last_lr, lr_mul = self.train_epoch()
             total_time += sum_time

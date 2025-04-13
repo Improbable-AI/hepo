@@ -445,10 +445,16 @@ class FrankaCubeStack(VecTask):
         self._update_states()
 
     def compute_reward(self, actions):
-        self.rew_buf[:], self.reset_goal_buf[:], self.reset_buf[:] = compute_franka_reward(
-            self.reset_buf, self.progress_buf, self.reset_goal_buf, self.actions, self.states, self.reward_settings, self.max_episode_length
-        )
-        self.success_buf[:] = self.reset_goal_buf[:] / (self.max_episode_length - 1)
+        if self.use_bad_reward:
+            self.rew_buf[:], self.reset_goal_buf[:], self.reset_buf[:] = compute_bad_franka_reward(
+                self.reset_buf, self.progress_buf, self.reset_goal_buf, self.actions, self.states, self.reward_settings, self.max_episode_length
+            )
+            self.success_buf[:] = self.reset_goal_buf[:] / (self.max_episode_length - 1)
+        else:
+            self.rew_buf[:], self.reset_goal_buf[:], self.reset_buf[:] = compute_franka_reward(
+                self.reset_buf, self.progress_buf, self.reset_goal_buf, self.actions, self.states, self.reward_settings, self.max_episode_length
+            )
+            self.success_buf[:] = self.reset_goal_buf[:] / (self.max_episode_length - 1)
 
     def compute_observations(self):
         self._refresh()
@@ -742,6 +748,61 @@ def compute_franka_reward(
         stack_reward,
         reward_settings["r_stack_scale"] * stack_reward,
         reward_settings["r_dist_scale"] * dist_reward + reward_settings["r_lift_scale"] * lift_reward + reward_settings[
+            "r_align_scale"] * align_reward,
+    )
+
+    # Compute resets
+    # reset_buf = torch.where((progress_buf >= max_episode_length - 1) | (stack_reward > 0), torch.ones_like(reset_buf), reset_buf)
+    reset_buf = torch.where((progress_buf >= max_episode_length - 1), torch.ones_like(reset_buf), reset_buf)
+    # goal_resets = torch.where(stack_reward > 0, torch.ones_like(reset_goal_buf), reset_goal_buf)
+    goal_resets = torch.where(stack_reward > 0, torch.ones_like(reset_goal_buf), torch.zeros_like(reset_goal_buf))
+    return rewards, goal_resets, reset_buf
+
+
+@torch.jit.script
+def compute_bad_franka_reward(
+    reset_buf, progress_buf, reset_goal_buf, actions, states, reward_settings, max_episode_length
+):
+    # type: (Tensor, Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor, Tensor]
+
+    # Compute per-env physical parameters
+    target_height = states["cubeB_size"] + states["cubeA_size"] / 2.0
+    cubeA_size = states["cubeA_size"]
+    cubeB_size = states["cubeB_size"]
+
+    # distance from hand to the cubeA
+    d = torch.norm(states["cubeA_pos_relative"], dim=-1)
+    d_lf = torch.norm(states["cubeA_pos"] - states["eef_lf_pos"], dim=-1)
+    d_rf = torch.norm(states["cubeA_pos"] - states["eef_rf_pos"], dim=-1)
+    dist_reward = 1 - torch.tanh(10.0 * (d + d_lf + d_rf) / 3)
+
+    # reward for lifting cubeA
+    cubeA_height = states["cubeA_pos"][:, 2] - reward_settings["table_height"]
+    cubeA_lifted = (cubeA_height - cubeA_size) > 0.04
+    lift_reward = cubeA_lifted
+
+    # how closely aligned cubeA is to cubeB (only provided if cubeA is lifted)
+    offset = torch.zeros_like(states["cubeA_to_cubeB_pos"])
+    offset[:, 2] = (cubeA_size + cubeB_size) / 2
+    d_ab = torch.norm(states["cubeA_to_cubeB_pos"] + offset, dim=-1)
+    align_reward = (1 - torch.tanh(10.0 * d_ab)) * cubeA_lifted
+
+    # Dist reward is maximum of dist and align reward
+    dist_reward = torch.max(dist_reward, align_reward)
+
+    # final reward for stacking successfully (only if cubeA is close to target height and corresponding location, and gripper is not grasping)
+    cubeA_align_cubeB = (torch.norm(states["cubeA_to_cubeB_pos"][:, :2], dim=-1) < 0.02)
+    cubeA_on_cubeB = torch.abs(cubeA_height - target_height) < 0.02
+    gripper_away_from_cubeA = (d > 0.04)
+    stack_reward = cubeA_align_cubeB & cubeA_on_cubeB & gripper_away_from_cubeA
+
+    # Compose rewards
+
+    # We either provide the stack reward or the align + dist reward
+    rewards = torch.where(
+        stack_reward,
+        reward_settings["r_stack_scale"] * stack_reward,
+        reward_settings["r_dist_scale"] * dist_reward + reward_settings[
             "r_align_scale"] * align_reward,
     )
 

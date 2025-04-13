@@ -50,6 +50,11 @@ def swap_and_flatten01(arr):
     if arr is None:
         return arr
     s = arr.size()
+    res = torch.cat([swap(arr[:, :s[1]//2]), swap(arr[:, s[1]//2:])])
+    return res
+
+def swap(arr):
+    s = arr.size()
     return arr.transpose(0, 1).reshape(s[0] * s[1], *s[2:])
 
 def rescale_actions(low, high, action):
@@ -95,24 +100,27 @@ class ContinuousHEPOAgent(a2c_common.ContinuousA2CBase):
         self.states = None
         self.bound_loss_type = self.config.get('bound_loss_type', 'bound') # 'regularisation' or 'bound'
         
-        self.initialize_eipo_train()
-        self.initialize_eipo_dataset()
+        self.initialize_hepo_train()
+        self.initialize_hepo_dataset()
         
-    def initialize_eipo_train(self):
+    def initialize_hepo_train(self):
         self.model_dict = {}
         self.optimizer_dict = {}
         self.value_mean_std_dict = {}
         self.value_mean_std_int_dict = {}
+        self.advantage_mean_std_dict = {}
+        self.advantage_mean_std_int_dict = {}
         self.last_lr_dict = {}
         self.entropy_coef_dict = {}
         self.scheduler_dict = {}
+    
         for model_type in self.model_list_all:
             self.model_dict[model_type] = self.construct_a2c_model()
             self.optimizer_dict[model_type] = optim.Adam(self.model_dict[model_type].parameters(),
                                         self.last_lr, eps=1e-08, weight_decay=self.weight_decay)
             if self.normalize_advantage and self.normalize_rms_advantage:
-                self.advantage_mean_std_dict = {'hepo': self.advantage_mean_std, 
-                                                'ref': copy.deepcopy(self.advantage_mean_std)}
+                self.advantage_mean_std_dict[model_type] = copy.deepcopy(self.advantage_mean_std)
+                self.advantage_mean_std_int_dict[model_type] = copy.deepcopy(self.advantage_mean_std)
             if self.normalize_value:
                 if self.has_central_value:
                     self.value_mean_std_dict[model_type] = self.central_value_net.model.value_mean_std
@@ -128,7 +136,7 @@ class ContinuousHEPOAgent(a2c_common.ContinuousA2CBase):
         self.optimizer = self.optimizer_dict['hepo']
         self.init_rnn_from_model(self.model)
 
-    def initialize_eipo_dataset(self):
+    def initialize_hepo_dataset(self):
         self.dataset_dict = {}
         for model_type in self.model_list_all:
             dataset = datasets.PPODataset(self.batch_size, self.minibatch_size, self.is_discrete, 
@@ -337,13 +345,7 @@ class ContinuousHEPOAgent(a2c_common.ContinuousA2CBase):
                         'performance/step_inference_time': play_time,
                         'performance/step_time': step_time}
         wandb.log(time_record, step=epoch_num)
-        # self.writer.add_scalar('performance/step_inference_rl_update_fps', curr_frames / scaled_time, frame)
-        # self.writer.add_scalar('performance/step_inference_fps', curr_frames / scaled_play_time, frame)
-        # self.writer.add_scalar('performance/step_fps', curr_frames / step_time, frame)
-        # self.writer.add_scalar('performance/rl_update_time', update_time, frame)
-        # self.writer.add_scalar('performance/step_inference_time', play_time, frame)
-        # self.writer.add_scalar('performance/step_time', step_time, frame)
-        # self.writer.add_scalar('info/epochs', epoch_num, frame)
+
         loss_record = {}
         for model_type in self.model_list_all:
             loss_record.update({f'losses/{model_type}_a_loss': torch_ext.mean_list(a_losses[model_type]).item(),
@@ -352,8 +354,7 @@ class ContinuousHEPOAgent(a2c_common.ContinuousA2CBase):
             f'info/{model_type}_e_clip': self.e_clip * lr_mul[model_type],
             f'info/{model_type}_last_lr': last_lr[model_type] * lr_mul[model_type],
             f'info/{model_type}_lr_mul': lr_mul[model_type],
-            # to be removed
-            f'info/{model_type}kl': torch_ext.mean_list(kls[model_type]).item(),
+            f'info/{model_type}_kl': torch_ext.mean_list(kls[model_type]).item(),
             })
         wandb.log(loss_record, step=epoch_num)
         trigger_sync()
@@ -449,7 +450,6 @@ class ContinuousHEPOAgent(a2c_common.ContinuousA2CBase):
         if self.multi_gpu:
             dist.all_reduce(av_kl, op=dist.ReduceOp.SUM)
             av_kl /= self.world_size
-        av_kl = av_kl
         return av_kl
                             
     def schedule(self, av_kl, model_type):
@@ -538,12 +538,27 @@ class ContinuousHEPOAgent(a2c_common.ContinuousA2CBase):
                                 for model_type in self.model_list_all}
         stat_info['lr_mul'] = {model_type: stat_info_dict[model_type]['lr_mul'] \
                                for model_type in self.model_list_all}
-        max_eps_leng = self.vec_env.env.max_episode_length
-        eps_leng = None
-        if self.game_lengths.current_size > 0:
-            eps_leng = self.game_lengths.get_mean()
-            max_eps_leng = self.vec_env.env.max_episode_length
-        self.lgrgn_mtpr.update_alpha_values(eps_leng, max_eps_leng)
+
+        with torch.no_grad():
+            last_fdones = self.dones.float()
+            last_values_dict = self.get_values(self.obs)
+            
+            fdones = self.experience_buffer['hepo'].tensor_dict['dones'].float()
+            obses = self.experience_buffer['hepo'].tensor_dict['obses']
+            
+            s = obses.size()
+            values_dict = self.get_values({'obs': obses.view(s[0] * s[1], *s[2:])})
+
+            advantages_dict = {}
+            for model_type in self.model_list_all:
+                rewards = self.experience_buffer[model_type].tensor_dict['rewards']
+                last_values = last_values_dict[model_type]['ext']
+                values = values_dict[model_type]['ext'].view(s[0], s[1], 1)
+                
+                advantages_dict[model_type] = self.discount_values(last_fdones, last_values, fdones, values, rewards)
+                advantages_dict[model_type] = (advantages_dict[model_type] - \
+                    advantages_dict[model_type].mean()) / (advantages_dict[model_type].std() + 1e-8)
+        self.lgrgn_mtpr.update_alpha_values(advantages_dict)
         if self.use_switch:
             self.current_type = self.lgrgn_mtpr.rollout_policy
         return times, losses, stat_info
@@ -674,10 +689,17 @@ class ContinuousHEPOAgent(a2c_common.ContinuousA2CBase):
         else:
             for key in self.replace_list:
                 half_bsz = len(dataset_dicts['ref'][key]) // 2
-                dataset_dicts['ref'][key][:half_bsz] = \
-                    dataset_dicts['hepo'][key][:half_bsz]
-                dataset_dicts['hepo'][key][half_bsz:] = \
-                    dataset_dicts['ref'][key][half_bsz:]
+                dataset_dicts['hepo'][key] = dataset_dicts['ref'][key] = \
+                    torch.cat([dataset_dicts['hepo'][key][:half_bsz], \
+                        dataset_dicts['ref'][key][half_bsz:]])
+            for model_type in self.model_list_all:    
+                for key in dataset_dicts[model_type]:
+                    if dataset_dicts[model_type][key] is not None:
+                        s = dataset_dicts[model_type][key].size()
+                        assert 2 * half_bsz == s[0]
+                        dataset_dicts[model_type][key] = \
+                            dataset_dicts[model_type][key].reshape(\
+                                2, half_bsz, *s[1:]).transpose(0, 1).reshape(s[0], *s[1:]).contiguous()
         for model_type in self.model_list_all:    
             self.dataset_dict[model_type].update_values_dict(dataset_dicts[model_type])
 
@@ -750,7 +772,7 @@ class ContinuousHEPOAgent(a2c_common.ContinuousA2CBase):
             a_loss = self.actor_loss_func(old_action_log_probs_batch, action_log_probs, advantage, self.ppo, curr_e_clip)
 
             if self.has_value_loss:
-                c_loss = common_losses.critic_loss(model,value_preds_batch, values, curr_e_clip, return_batch, self.clip_value)
+                c_loss = common_losses.critic_loss(model, value_preds_batch, values, curr_e_clip, return_batch, self.clip_value)
                 if 'values_int' in res_dict:
                     c_loss = c_loss + common_losses.critic_loss(model, input_dict['old_values_int'], res_dict['values_int'], 
                                                             curr_e_clip, input_dict['returns_int'], self.clip_value)
@@ -796,7 +818,6 @@ class ContinuousHEPOAgent(a2c_common.ContinuousA2CBase):
             losses, stat_info = self.calc_losses(input_dict[model_type], model_type)
             losses_dict[model_type] = losses
             stat_info_dict[model_type] = stat_info
-            # print(model_type, losses['total_loss'].item())
             loss = loss + losses['total_loss']
         self.scaler.scale(loss).backward()
         self.trancate_gradients_and_step()
@@ -897,10 +918,9 @@ class ContinuousHEPOAgent(a2c_common.ContinuousA2CBase):
                         if model_type == self.current_type:
                             self.mean_rewards = mean_rewards[0]
                             reward_record['episode_lengths/step'] = self.game_lengths.get_mean()
-                            # reward_record['eipo_info/complete_rate'] = self.lgrgn_mtpr.complete_rate
                         if model_type in self.lgrgn_mtpr.alpha_grad:
-                            reward_record.update({f'eipo_info/{model_type}_alpha_value': self.lgrgn_mtpr.alpha[model_type].item(), 
-                                        f'eipo_info/{model_type}_alpha_gradient': self.lgrgn_mtpr.alpha_grad[model_type].item()})
+                            reward_record.update({f'hepo_info/{model_type}_alpha_value': self.lgrgn_mtpr.alpha[model_type].item(), 
+                                        f'hepo_info/{model_type}_alpha_gradient': self.lgrgn_mtpr.alpha_grad[model_type].item()})
                        
                         for i in range(self.value_size):
                             rewards_name = 'rewards' if i == 0 else 'rewards{0}'.format(i)

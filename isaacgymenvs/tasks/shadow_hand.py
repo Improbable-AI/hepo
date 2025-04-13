@@ -412,14 +412,23 @@ class ShadowHand(VecTask):
         self.object_indices = to_torch(self.object_indices, dtype=torch.long, device=self.device)
         self.goal_object_indices = to_torch(self.goal_object_indices, dtype=torch.long, device=self.device)
 
-    def compute_reward(self, actions):        
-        self.rew_buf[:], self.reset_buf[:], self.reset_goal_buf[:], self.progress_buf[:], self.successes[:], self.consecutive_successes[:] = compute_hand_reward(
-            self.rew_buf, self.reset_buf, self.reset_goal_buf, self.progress_buf, self.successes, self.consecutive_successes,
-            self.max_episode_length, self.object_pos, self.object_rot, self.goal_pos, self.goal_rot,
-            self.dist_reward_scale, self.rot_reward_scale, self.rot_eps, self.actions, self.action_penalty_scale,
-            self.success_tolerance, self.reach_goal_bonus, self.fall_dist, self.fall_penalty,
-            self.max_consecutive_successes, self.av_factor, (self.object_type == "pen")
-        )
+    def compute_reward(self, actions):
+        if self.use_bad_reward:
+            self.rew_buf[:], self.reset_buf[:], self.reset_goal_buf[:], self.progress_buf[:], self.successes[:], self.consecutive_successes[:] = compute_bad_hand_reward(
+                self.rew_buf, self.reset_buf, self.reset_goal_buf, self.progress_buf, self.successes, self.consecutive_successes,
+                self.max_episode_length, self.object_pos, self.object_rot, self.goal_pos, self.goal_rot,
+                self.dist_reward_scale, self.rot_reward_scale, self.rot_eps, self.actions, self.action_penalty_scale,
+                self.success_tolerance, self.reach_goal_bonus, self.fall_dist, self.fall_penalty,
+                self.max_consecutive_successes, self.av_factor, (self.object_type == "pen")
+            )
+        else:
+            self.rew_buf[:], self.reset_buf[:], self.reset_goal_buf[:], self.progress_buf[:], self.successes[:], self.consecutive_successes[:] = compute_hand_reward(
+                self.rew_buf, self.reset_buf, self.reset_goal_buf, self.progress_buf, self.successes, self.consecutive_successes,
+                self.max_episode_length, self.object_pos, self.object_rot, self.goal_pos, self.goal_rot,
+                self.dist_reward_scale, self.rot_reward_scale, self.rot_eps, self.actions, self.action_penalty_scale,
+                self.success_tolerance, self.reach_goal_bonus, self.fall_dist, self.fall_penalty,
+                self.max_consecutive_successes, self.av_factor, (self.object_type == "pen")
+            )
         self.success_buf[:] = self.reset_goal_buf[:] / (self.max_episode_length - 1)
         self.extras['consecutive_successes'] = self.consecutive_successes.mean()
 
@@ -797,6 +806,64 @@ def compute_hand_reward(
 
     cons_successes = torch.where(num_resets > 0, av_factor*finished_cons_successes/num_resets + (1.0 - av_factor)*consecutive_successes, consecutive_successes)
     return reward, resets, goal_resets, progress_buf, successes, cons_successes
+
+
+@torch.jit.script
+def compute_bad_hand_reward(
+    rew_buf, reset_buf, reset_goal_buf, progress_buf, successes, consecutive_successes,
+    max_episode_length: float, object_pos, object_rot, target_pos, target_rot,
+    dist_reward_scale: float, rot_reward_scale: float, rot_eps: float,
+    actions, action_penalty_scale: float,
+    success_tolerance: float, reach_goal_bonus: float, fall_dist: float,
+    fall_penalty: float, max_consecutive_successes: int, av_factor: float, ignore_z_rot: bool
+):
+    # Distance from the hand to the object
+    goal_dist = torch.norm(object_pos - target_pos, p=2, dim=-1)
+
+    if ignore_z_rot:
+        success_tolerance = 2.0 * success_tolerance
+
+    # Orientation alignment for the cube in hand and goal cube
+    quat_diff = quat_mul(object_rot, quat_conjugate(target_rot))
+    rot_dist = 2.0 * torch.asin(torch.clamp(torch.norm(quat_diff[:, 0:3], p=2, dim=-1), max=1.0))
+
+    dist_rew = goal_dist * dist_reward_scale
+    rot_rew = 1.0/(torch.abs(rot_dist) + rot_eps) * rot_reward_scale
+
+    action_penalty = torch.sum(actions ** 2, dim=-1)
+
+    # Total reward is: position distance + orientation alignment + action regularization + success bonus + fall penalty
+    reward = dist_rew + action_penalty * action_penalty_scale
+    # reward = dist_rew + rot_rew + action_penalty * action_penalty_scale
+
+    # Find out which envs hit the goal and update successes count
+    goal_resets = torch.where(torch.abs(rot_dist) <= success_tolerance, torch.ones_like(reset_goal_buf), reset_goal_buf)
+    successes = successes + goal_resets
+
+    # Success bonus: orientation is within `success_tolerance` of goal orientation
+    reward = torch.where(goal_resets == 1, reward + reach_goal_bonus, reward)
+
+    # Fall penalty: distance to the goal is larger than a threshold
+    reward = torch.where(goal_dist >= fall_dist, reward + fall_penalty, reward)
+
+    # Check env termination conditions, including maximum success number
+    resets = torch.where(goal_dist >= fall_dist, torch.ones_like(reset_buf), reset_buf)
+    if max_consecutive_successes > 0:
+        # Reset progress buffer on goal envs if max_consecutive_successes > 0
+        progress_buf = torch.where(torch.abs(rot_dist) <= success_tolerance, torch.zeros_like(progress_buf), progress_buf)
+        resets = torch.where(successes >= max_consecutive_successes, torch.ones_like(resets), resets)
+    resets = torch.where(progress_buf >= max_episode_length - 1, torch.ones_like(resets), resets)
+
+    # Apply penalty for not reaching the goal
+    if max_consecutive_successes > 0:
+        reward = torch.where(progress_buf >= max_episode_length - 1, reward + 0.5 * fall_penalty, reward)
+
+    num_resets = torch.sum(resets)
+    finished_cons_successes = torch.sum(successes * resets.float())
+
+    cons_successes = torch.where(num_resets > 0, av_factor*finished_cons_successes/num_resets + (1.0 - av_factor)*consecutive_successes, consecutive_successes)
+    return reward, resets, goal_resets, progress_buf, successes, cons_successes
+
 
 @torch.jit.script
 def randomize_rotation(rand0, rand1, x_unit_tensor, y_unit_tensor):

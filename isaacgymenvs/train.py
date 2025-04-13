@@ -213,14 +213,17 @@ def launch_rlg_hydra(cfg: DictConfig):
         'checkpoint': cfg.checkpoint,
         'sigma': cfg.sigma if cfg.sigma != '' else None,
         'use_hepo': cfg.use_hepo,
-        'use_eps': cfg.use_eps,
+        'use_switch': cfg.use_switch,
         'alpha': cfg.alpha,
         'lmbd': cfg.lmbd,
         'ext_scheme': cfg.ext_scheme,
-        'int_scheme': cfg.int_scheme,        
-        'update_alpha_gae': cfg.update_alpha_gae,        
-        'use_human_design_reward': cfg.use_human_design_reward,        
-        "alpha_lr": cfg.alpha_lr,
+        'int_scheme': cfg.int_scheme,
+        'ref_scheme': cfg.ref_scheme,
+        'use_pbrs': cfg.use_pbrs,
+        'use_hurl': cfg.use_hurl,
+        'use_bad_reward': cfg.use_bad_reward,
+        'use_human_design_reward': cfg.use_human_design_reward,
+        "alpha_lr": cfg.alpha_lr
     }) 
 
 

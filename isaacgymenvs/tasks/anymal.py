@@ -238,21 +238,37 @@ class Anymal(VecTask):
         self.compute_observations()
         self.compute_reward(self.actions)
 
-    def compute_reward(self, actions):    
-        self.rew_buf[:], self.success_buf[:], self.reset_buf[:] = compute_anymal_reward(
-            # tensors
-            self.root_states,
-            self.commands,
-            self.torques,
-            self.contact_forces,
-            self.knee_indices,
-            self.progress_buf,
-            # Dict
-            self.rew_scales,
-            # other
-            self.base_index,
-            self.max_episode_length,
-        )
+    def compute_reward(self, actions):
+        if self.use_bad_reward:
+            self.rew_buf[:], self.success_buf[:], self.reset_buf[:] = compute_bad_anymal_reward(
+                # tensors
+                self.root_states,
+                self.commands,
+                self.torques,
+                self.contact_forces,
+                self.knee_indices,
+                self.progress_buf,
+                # Dict
+                self.rew_scales,
+                # other
+                self.base_index,
+                self.max_episode_length,
+            )
+        else:
+            self.rew_buf[:], self.success_buf[:], self.reset_buf[:] = compute_anymal_reward(
+                # tensors
+                self.root_states,
+                self.commands,
+                self.torques,
+                self.contact_forces,
+                self.knee_indices,
+                self.progress_buf,
+                # Dict
+                self.rew_scales,
+                # other
+                self.base_index,
+                self.max_episode_length,
+            )
 
     def compute_observations(self):
         self.gym.refresh_dof_state_tensor(self.sim)  # done in step

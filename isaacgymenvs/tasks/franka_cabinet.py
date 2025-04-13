@@ -366,15 +366,25 @@ class FrankaCabinet(VecTask):
                     self.num_envs, self.dist_reward_scale, self.rot_reward_scale, self.around_handle_reward_scale, self.open_reward_scale,
                     self.finger_dist_reward_scale, self.action_penalty_scale, self.distX_offset, self.max_episode_length
             )
-        else:                        
-            self.rew_buf[:], self.reset_buf[:], self.reset_goal_buf[:], self.consecutive_successes[:] = compute_franka_reward(
-                self.reset_buf, self.progress_buf, self.reset_goal_buf, self.successes, self.consecutive_successes, self.actions, self.cabinet_dof_pos,
-                self.franka_grasp_pos, self.drawer_grasp_pos, self.franka_grasp_rot, self.drawer_grasp_rot,
-                self.franka_lfinger_pos, self.franka_rfinger_pos,
-                self.gripper_forward_axis, self.drawer_inward_axis, self.gripper_up_axis, self.drawer_up_axis,
-                self.num_envs, self.dist_reward_scale, self.rot_reward_scale, self.around_handle_reward_scale, self.open_reward_scale,
-                self.finger_dist_reward_scale, self.action_penalty_scale, self.distX_offset, self.max_episode_length
-            )
+        else:            
+            if self.use_bad_reward:
+                self.rew_buf[:], self.reset_buf[:], self.reset_goal_buf[:], self.consecutive_successes[:] = compute_bad_franka_reward(
+                    self.reset_buf, self.progress_buf, self.reset_goal_buf, self.successes, self.consecutive_successes, self.actions, self.cabinet_dof_pos,
+                    self.franka_grasp_pos, self.drawer_grasp_pos, self.franka_grasp_rot, self.drawer_grasp_rot,
+                    self.franka_lfinger_pos, self.franka_rfinger_pos,
+                    self.gripper_forward_axis, self.drawer_inward_axis, self.gripper_up_axis, self.drawer_up_axis,
+                    self.num_envs, self.dist_reward_scale, self.rot_reward_scale, self.around_handle_reward_scale, self.open_reward_scale,
+                    self.finger_dist_reward_scale, self.action_penalty_scale, self.distX_offset, self.max_episode_length
+                )
+            else:
+                self.rew_buf[:], self.reset_buf[:], self.reset_goal_buf[:], self.consecutive_successes[:] = compute_franka_reward(
+                    self.reset_buf, self.progress_buf, self.reset_goal_buf, self.successes, self.consecutive_successes, self.actions, self.cabinet_dof_pos,
+                    self.franka_grasp_pos, self.drawer_grasp_pos, self.franka_grasp_rot, self.drawer_grasp_rot,
+                    self.franka_lfinger_pos, self.franka_rfinger_pos,
+                    self.gripper_forward_axis, self.drawer_inward_axis, self.gripper_up_axis, self.drawer_up_axis,
+                    self.num_envs, self.dist_reward_scale, self.rot_reward_scale, self.around_handle_reward_scale, self.open_reward_scale,
+                    self.finger_dist_reward_scale, self.action_penalty_scale, self.distX_offset, self.max_episode_length
+                )
         self.success_buf[:] = self.reset_goal_buf[:] / (self.max_episode_length - 1)
 
     def compute_observations(self):
@@ -1235,6 +1245,80 @@ def compute_hepo6_reward(
     rewards = successes + aux_rewards
 
     return rewards, reset_buf, goal_resets, consecutive_successes
+
+
+@torch.jit.script
+def compute_bad_franka_reward(
+    reset_buf, progress_buf, reset_goal_buf, successes, consecutive_successes, actions, cabinet_dof_pos,
+    franka_grasp_pos, drawer_grasp_pos, franka_grasp_rot, drawer_grasp_rot,
+    franka_lfinger_pos, franka_rfinger_pos,
+    gripper_forward_axis, drawer_inward_axis, gripper_up_axis, drawer_up_axis,
+    num_envs, dist_reward_scale, rot_reward_scale, around_handle_reward_scale, open_reward_scale,
+    finger_dist_reward_scale, action_penalty_scale, distX_offset, max_episode_length
+):
+    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, int, float, float, float, float, float, float, float, float) -> Tuple[Tensor, Tensor, Tensor, Tensor]
+
+    # distance from hand to the drawer
+    d = torch.norm(franka_grasp_pos - drawer_grasp_pos, p=2, dim=-1)
+    dist_reward = 1.0 / (1.0 + d ** 2)
+    dist_reward *= dist_reward
+    dist_reward = torch.where(d <= 0.02, dist_reward * 2, dist_reward)
+
+    axis1 = tf_vector(franka_grasp_rot, gripper_forward_axis)
+    axis2 = tf_vector(drawer_grasp_rot, drawer_inward_axis)
+    axis3 = tf_vector(franka_grasp_rot, gripper_up_axis)
+    axis4 = tf_vector(drawer_grasp_rot, drawer_up_axis)
+
+    dot1 = torch.bmm(axis1.view(num_envs, 1, 3), axis2.view(num_envs, 3, 1)).squeeze(-1).squeeze(-1)  # alignment of forward axis for gripper
+    dot2 = torch.bmm(axis3.view(num_envs, 1, 3), axis4.view(num_envs, 3, 1)).squeeze(-1).squeeze(-1)  # alignment of up axis for gripper
+    # reward for matching the orientation of the hand to the drawer (fingers wrapped)
+    rot_reward = 0.5 * (torch.sign(dot1) * dot1 ** 2 + torch.sign(dot2) * dot2 ** 2)
+
+    # bonus if left finger is above the drawer handle and right below
+    around_handle_reward = torch.zeros_like(rot_reward)
+    around_handle_reward = torch.where(franka_lfinger_pos[:, 2] > drawer_grasp_pos[:, 2],
+                                       torch.where(franka_rfinger_pos[:, 2] < drawer_grasp_pos[:, 2],
+                                                   around_handle_reward + 0.5, around_handle_reward), around_handle_reward)
+    # reward for distance of each finger from the drawer
+    finger_dist_reward = torch.zeros_like(rot_reward)
+    lfinger_dist = torch.abs(franka_lfinger_pos[:, 2] - drawer_grasp_pos[:, 2])
+    rfinger_dist = torch.abs(franka_rfinger_pos[:, 2] - drawer_grasp_pos[:, 2])
+    finger_dist_reward = torch.where(franka_lfinger_pos[:, 2] > drawer_grasp_pos[:, 2],
+                                     torch.where(franka_rfinger_pos[:, 2] < drawer_grasp_pos[:, 2],
+                                                 (0.04 - lfinger_dist) + (0.04 - rfinger_dist), finger_dist_reward), finger_dist_reward)
+
+    # regularization on the actions (summed for each environment)
+    action_penalty = torch.sum(actions ** 2, dim=-1)
+
+    # how far the cabinet has been opened out
+    open_reward = cabinet_dof_pos[:, 3] * around_handle_reward + cabinet_dof_pos[:, 3]  # drawer_top_joint
+
+    rewards = dist_reward_scale * dist_reward + rot_reward_scale * rot_reward \
+        + around_handle_reward_scale * around_handle_reward + open_reward_scale * open_reward \
+        + finger_dist_reward_scale * finger_dist_reward - action_penalty_scale * action_penalty
+
+    # bonus for opening drawer properly
+    rewards = torch.where(cabinet_dof_pos[:, 3] > 0.01, rewards + 0.5, rewards)
+    rewards = torch.where(cabinet_dof_pos[:, 3] > 0.2, rewards + around_handle_reward, rewards)
+    rewards = torch.where(cabinet_dof_pos[:, 3] > 0.39, rewards + (2.0 * around_handle_reward), rewards)
+
+    # prevent bad style in opening drawer
+    rewards = torch.where(franka_lfinger_pos[:, 0] < drawer_grasp_pos[:, 0] - distX_offset,
+                          torch.ones_like(rewards) * -1, rewards)
+    rewards = torch.where(franka_rfinger_pos[:, 0] < drawer_grasp_pos[:, 0] - distX_offset,
+                          torch.ones_like(rewards) * -1, rewards)
+    
+    # reset if drawer is open or max length reached
+    successes = torch.where(cabinet_dof_pos[:, 3] > 0.39, torch.ones_like(successes), successes)
+    goal_resets = torch.where(cabinet_dof_pos[:, 3] > 0.39, torch.ones_like(reset_goal_buf), torch.zeros_like(reset_goal_buf))
+    # goal_resets = torch.where(cabinet_dof_pos[:, 3] > 0.39, torch.ones_like(reset_goal_buf), reset_goal_buf)
+    # reset_buf = torch.where(cabinet_dof_pos[:, 3] > 0.39, torch.ones_like(reset_buf), reset_buf)
+    reset_buf = torch.where(progress_buf >= max_episode_length - 1, torch.ones_like(reset_buf), reset_buf)
+
+    consecutive_successes = torch.where(reset_buf > 0, successes * reset_buf, consecutive_successes)
+
+    return rewards, reset_buf, goal_resets, consecutive_successes
+
 
 @torch.jit.script
 def compute_grasp_transforms(hand_rot, hand_pos, franka_local_grasp_rot, franka_local_grasp_pos,

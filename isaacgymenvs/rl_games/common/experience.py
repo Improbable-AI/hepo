@@ -1,6 +1,7 @@
 import numpy as np
 import random
 import gym
+import gymnasium
 import torch
 from rl_games.common.segment_tree import SumSegmentTree, MinSegmentTree
 import torch
@@ -313,7 +314,7 @@ class ExperienceBuffer:
             self.actions_shape = (len(self.action_space),) 
             self.actions_num = [action.n for action in self.action_space]
             self.is_multi_discrete = True
-        if type(self.action_space) is gym.spaces.Box:
+        if type(self.action_space) is gym.spaces.Box or gymnasium.spaces.box.Box:
             self.actions_shape = (self.action_space.shape[0],) 
             self.actions_num = self.action_space.shape[0]
             self.is_continuous = True
@@ -327,7 +328,6 @@ class ExperienceBuffer:
     def _init_from_env_info(self, env_info):
         obs_base_shape = self.obs_base_shape
         state_base_shape = self.state_base_shape
-
         self.tensor_dict['obses'] = self._create_tensor_from_space(env_info['observation_space'], obs_base_shape)
         if self.has_central_value:
             self.tensor_dict['states'] = self._create_tensor_from_space(env_info['state_space'], state_base_shape)
@@ -353,7 +353,7 @@ class ExperienceBuffer:
             self.tensor_dict[k] = self._create_tensor_from_space(gym.spaces.Box(low=0, high=1,shape=(v), dtype=np.float32), obs_base_shape)
 
     def _create_tensor_from_space(self, space, base_shape):       
-        if type(space) is gym.spaces.Box:
+        if type(space) is gym.spaces.Box or gymnasium.spaces.box.Box:
             dtype = numpy_to_torch_dtype_dict[space.dtype]
             return torch.zeros(base_shape + space.shape, dtype= dtype, device = self.device)
         if type(space) is gym.spaces.Discrete:

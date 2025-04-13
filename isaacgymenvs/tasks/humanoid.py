@@ -216,8 +216,9 @@ class Humanoid(VecTask):
 
         self.extremities = to_torch([5, 8], device=self.device, dtype=torch.long)
 
-    def compute_reward(self, actions):    
-        self.rew_buf[:], self.success_buf[:], self.reset_buf = compute_humanoid_reward(
+    def compute_reward(self, actions):
+        if self.use_bad_reward:
+            self.rew_buf[:], self.success_buf[:], self.reset_buf = compute_bad_reward(
             self.obs_buf,
             self.reset_buf,
             self.progress_buf,
@@ -235,6 +236,25 @@ class Humanoid(VecTask):
             self.death_cost,
             self.max_episode_length
         )
+        else:
+            self.rew_buf[:], self.success_buf[:], self.reset_buf = compute_humanoid_reward(
+                self.obs_buf,
+                self.reset_buf,
+                self.progress_buf,
+                self.actions,
+                self.up_weight,
+                self.heading_weight,
+                self.potentials,
+                self.prev_potentials,
+                self.actions_cost_scale,
+                self.energy_cost_scale,
+                self.joints_at_limit_cost_scale,
+                self.max_motor_effort,
+                self.motor_efforts,
+                self.termination_height,
+                self.death_cost,
+                self.max_episode_length
+            )
 
     def compute_observations(self):
         self.gym.refresh_dof_state_tensor(self.sim)
@@ -364,6 +384,57 @@ def compute_humanoid_reward(
 
     total_reward = progress_reward + alive_reward + up_reward + heading_reward - \
         actions_cost_scale * actions_cost - energy_cost_scale * electricity_cost - dof_at_limit_cost
+
+    # adjust reward for fallen agents
+    total_reward = torch.where(obs_buf[:, 0] < termination_height, torch.ones_like(total_reward) * death_cost, total_reward)
+    consecutive_successes = progress_reward
+    
+    # reset agents
+    reset = torch.where(obs_buf[:, 0] < termination_height, torch.ones_like(reset_buf), reset_buf)
+    reset = torch.where(progress_buf >= max_episode_length - 1, torch.ones_like(reset_buf), reset)
+
+    return total_reward, consecutive_successes, reset
+
+@torch.jit.script
+def compute_bad_reward(
+    obs_buf,
+    reset_buf,
+    progress_buf,
+    actions,
+    up_weight,
+    heading_weight,
+    potentials,
+    prev_potentials,
+    actions_cost_scale,
+    energy_cost_scale,
+    joints_at_limit_cost_scale,
+    max_motor_effort,
+    motor_efforts,
+    termination_height,
+    death_cost,
+    max_episode_length
+):
+    # type: (Tensor, Tensor, Tensor, Tensor, float, float, Tensor, Tensor, float, float, float, float, Tensor, float, float, float) -> Tuple[Tensor, Tensor, Tensor]
+
+    # reward from direction headed
+    # heading_weight_tensor = torch.ones_like(obs_buf[:, 11]) * heading_weight
+    # heading_reward = torch.where(obs_buf[:, 11] > 0.8, heading_weight_tensor, heading_weight * obs_buf[:, 11] / 0.8)
+
+    # aligning up axis of ant and environment
+    # up_reward = torch.zeros_like(heading_reward)
+    # up_reward = torch.where(obs_buf[:, 10] > 0.93, up_reward + up_weight, up_reward)
+
+    # energy penalty for movement
+    actions_cost = torch.sum(actions ** 2, dim=-1)
+    # electricity_cost = torch.sum(torch.abs(actions * obs_buf[:, 20:28]), dim=-1)
+    # dof_at_limit_cost = torch.sum(obs_buf[:, 12:20] > 0.99, dim=-1)
+
+    # reward for duration of staying alive
+    alive_reward = torch.ones_like(potentials) * 2.0
+    progress_reward = potentials - prev_potentials
+
+    total_reward = progress_reward + alive_reward - \
+        actions_cost_scale * actions_cost 
 
     # adjust reward for fallen agents
     total_reward = torch.where(obs_buf[:, 0] < termination_height, torch.ones_like(total_reward) * death_cost, total_reward)

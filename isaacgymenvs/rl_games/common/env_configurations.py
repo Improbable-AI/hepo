@@ -60,6 +60,34 @@ def create_default_gym_env(**kwargs):
         env = wrappers.LimitStepsWrapper(env)
     return env
 
+def create_humanoid_env(name, **kwargs):
+    import gymnasium as gym
+    import humanoid_bench
+    class HumanoidWrapper(gym.Wrapper):
+        def __init__(self, env):
+            gym.RewardWrapper.__init__(self, env)
+            self.concat_infos = True
+
+        def reset(self, **kwargs):
+            obs, _ = self.env.reset(**kwargs)
+            return obs
+
+        def step(self, action):
+            observation, reward, done, trucate, info = self.env.step(action)
+            info['time_outs'] = trucate
+            done = done or trucate
+            return observation, reward, done, info
+
+        def get_terminated(self):
+            res, res_dict = super().get_terminated()
+            if self.progress >= self.max_length - 1:
+                res = True
+            print(res, self.max_length)
+            return res, res_dict
+    
+    env = HumanoidWrapper(gym.make(name, environment_kwargs=kwargs))
+    return env
+
 def create_goal_gym_env(**kwargs):
     frames = kwargs.pop('frames', 1)
     name = kwargs.pop('name')
@@ -255,6 +283,130 @@ def create_env(name, **kwargs):
 
 # Dictionary of env_name as key and a sub-dict containing env_type and a env-creator function
 configurations = {
+    'h1hand-walk-v0': {
+        'vecenv_type' : 'RAY',
+        'env_creator' : lambda **kwargs : create_humanoid_env('h1hand-walk-v0'),
+    },
+    'h1hand-reach-v0': {
+        'vecenv_type' : 'RAY',
+        'env_creator' : lambda **kwargs : create_humanoid_env('h1hand-reach-v0'),
+    },
+    'h1hand-hurdle-v0': {
+        'vecenv_type' : 'RAY',
+        'env_creator' : lambda **kwargs : create_humanoid_env('h1hand-hurdle-v0'),
+    },
+    'h1hand-crawl-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-crawl-v0'),
+    },
+    'h1hand-maze-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-maze-v0'),
+    },
+    'h1hand-push-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-push-v0'),
+    },
+    'h1hand-cabinet-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-cabinet-v0'),
+    },
+    'h1strong-highbar_hard-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1strong-highbar_hard-v0'),
+    },
+    'h1hand-door-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-door-v0'),
+    },
+    'h1hand-truck-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-truck-v0'),
+    },
+    'h1hand-cube-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-cube-v0'),
+    },
+    'h1hand-bookshelf_simple-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-bookshelf_simple-v0'),
+    },
+    'h1hand-bookshelf_hard-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-bookshelf_hard-v0'),
+    },
+    'h1hand-basketball-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-basketball-v0'),
+    },
+    'h1hand-window-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-window-v0'),
+    },
+    'h1hand-spoon-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-spoon-v0'),
+    },
+    'h1hand-kitchen-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-kitchen-v0'),
+    },
+    'h1hand-package-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-package-v0'),
+    },
+    'h1hand-powerlift-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-powerlift-v0'),
+    },
+    'h1hand-room-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-room-v0'),
+    },
+    'h1hand-stand-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-stand-v0'),
+    },
+    'h1hand-run-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-run-v0'),
+    },
+    'h1hand-sit_simple-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-sit_simple-v0'),
+    },
+    'h1hand-sit_hard-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-sit_hard-v0'),
+    },
+    'h1hand-balance_simple-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-balance_simple-v0'),
+    },
+    'h1hand-balance_hard-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-balance_hard-v0'),
+    },
+    'h1hand-stair-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-stair-v0'),
+    },
+    'h1hand-slide-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-slide-v0'),
+    },
+    'h1hand-pole-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-pole-v0'),
+    },
+    'h1hand-insert_normal-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-insert_normal-v0'),
+    },
+    'h1hand-insert_small-v0': {
+        'vecenv_type': 'RAY',
+        'env_creator': lambda **kwargs: create_humanoid_env('h1hand-insert_small-v0'),
+    },
     'CartPole-v1' : {
         'vecenv_type' : 'RAY',
         'env_creator' : lambda **kwargs : gym.make('CartPole-v1'),

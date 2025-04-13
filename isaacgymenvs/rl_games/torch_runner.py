@@ -144,7 +144,12 @@ class Runner:
         """
         print('Started to train')
         algo_name = self.algo_name
+        self.params['use_pbrs'] = args['use_pbrs']
+        self.params['use_hurl'] = args['use_hurl']
+        if (self.params['use_pbrs'] or self.params['use_pbrs']) and args['lmbd'] <= 0:
+            args['lmbd'] = 1.0
         self.params['use_int'] = (args['lmbd'] > 0)
+        self.params['use_switch'] = args['use_switch']
         self.params['ext_scheme'] = args['ext_scheme']
         self.params['int_scheme'] = args['int_scheme']
         if args['use_hepo']:
@@ -156,8 +161,8 @@ class Runner:
         _override_sigma(agent, args)
         if self.params['use_int'] or args['use_hepo']:
             _construct_multiplier(agent, args)
-        
-        # Change the reward function to human-designed reward functions
+        if args['use_bad_reward']:
+            agent.vec_env.env.use_bad_reward = True
         if args['use_human_design_reward']:
             agent.vec_env.env.use_human_design_reward = args['use_human_design_reward']
         

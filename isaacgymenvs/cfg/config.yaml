@@ -73,11 +73,13 @@ hydra:
 
 lmbd: 0.0
 alpha: 0.0
-alpha_lr: 0.0001
+alpha_lr: 0.01
+use_pbrs: False
+use_hurl: False
 use_hepo: False
-use_eps: False
-update_alpha: False
-update_alpha_gae: False
+use_switch: False
+use_bad_reward: False
 use_human_design_reward: 'none' # could be 'ppo{1-6}' or 'hepo{1-6}'
-ext_scheme: 'total'
-int_scheme: 'zero'
+ext_scheme: 'success' # could be 'total' and 'success'
+int_scheme: 'total' # could be 'zero' and 'total'
+ref_scheme: 'human' # could be 'human', 'const_lmbd', and 'hepo'
